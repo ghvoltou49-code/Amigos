@@ -1,0 +1,1809 @@
+import discord
+from discord.ext import commands
+import asyncio
+from datetime import datetime
+import json
+import os
+import random
+import re
+
+TOKEN = 'MTQ1OTM5MjEzNDM5MzM2ODc2NA.GAlXUA.0hXdDIV2isWeAsqrfZLu4wJLudbL8dEpakrTuE'
+
+intents = discord.Intents.default()
+intents.message_content = True
+intents.members = True
+intents.guilds = True
+intents.messages = True
+intents.reactions = True
+
+bot = commands.Bot(command_prefix='!', intents=intents, help_command=None)
+
+CONFIG_FILE = 'sistema_ticket.json'
+CARGOS_FILE = 'sistema_cargos.json'
+LOG_FILE = 'sistema_ticket_log.txt'
+
+RESPOSTAS_AUTOMATICAS = {
+    "oi": ["Olá! Como posso ajudar?", "Oi! Em que posso ser útil?", "Olá! Estou aqui para ajudar."],
+    "ola": ["Olá! Como posso ajudar?", "Oi! Em que posso ser útil?", "Olá! Estou aqui para ajudar."],
+    "olá": ["Olá! Como posso ajudar?", "Oi! Em que posso ser útil?", "Olá! Estou aqui para ajudar."],
+    "ola tudo bem": ["Tudo bem sim! E com você?", "Estou bem, obrigado! Como posso ajudar?", "Tudo ótimo! Em que posso ser útil?"],
+    "como vai": ["Vou bem, obrigado! E você?", "Estou bem! Como posso ajudar?", "Tudo tranquilo! Em que posso ser útil?"],
+    "bom dia": ["Bom dia! Como posso ajudar?", "Bom dia! Em que posso ser útil hoje?", "Bom dia! Estou aqui para ajudar."],
+    "boa tarde": ["Boa tarde! Como posso ajudar?", "Boa tarde! Em que posso ser útil?", "Boa tarde! Estou aqui para ajudar."],
+    "boa noite": ["Boa noite! Como posso ajudar?", "Boa noite! Em que posso ser útil?", "Boa noite! Estou aqui para ajudar."],
+    "obrigado": ["De nada! Estou aqui para ajudar!", "Por nada! Se precisar de mais alguma coisa é só chamar!", "Fico feliz em ajudar! 😊"],
+    "obrigada": ["De nada! Estou aqui para ajudar!", "Por nada! Se precisar de mais alguma coisa é só chamar!", "Fico feliz em ajudar! 😊"],
+    "valeu": ["Por nada! 😊", "De nada! Estou aqui para ajudar!", "Disponha!"],
+    "ajuda": ["Claro! Como posso ajudar?", "Estou aqui para te ajudar! Qual é o problema?", "Pode contar comigo! Qual é a sua dúvida?"],
+    "help": ["Claro! Como posso ajudar?", "Estou aqui para te ajudar! Qual é o problema?", "Pode contar comigo! Qual é a sua dúvida?"],
+    "suporte": ["Aqui é o suporte! Como posso ajudar?", "Suporte aqui! Qual é o seu problema?", "Estou no suporte! Em que posso ajudar?"],
+    "duvida": ["Qual é a sua dúvida?", "Pode falar! Qual é a dúvida?", "Estou aqui para esclarecer dúvidas! Qual é?"],
+    "problema": ["Qual é o problema?", "Pode descrever o problema?", "Entendo, qual é o problema específico?"],
+    "admin": ["Estou chamando um administrador para te ajudar! Por favor, aguarde.", "Um administrador será notificado em breve!", "Vou pedir para um admin vir te ajudar."],
+    "ticket": ["Para criar um ticket, clique no botão 🆘 CRIAR TICKET!", "Use o botão de criar ticket para abrir um atendimento privado.", "Clique no botão de ticket para receber ajuda!"],
+    "status": ["O sistema está funcionando perfeitamente! 😊", "Tudo operacional por aqui!", "Estou online e pronto para ajudar!"],
+}
+
+tickets_atendidos = {}
+
+def load_config():
+    if os.path.exists(CONFIG_FILE):
+        with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    return {}
+
+def save_config(config):
+    with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
+        json.dump(config, f, indent=4, ensure_ascii=False)
+
+def load_cargos():
+    if os.path.exists(CARGOS_FILE):
+        with open(CARGOS_FILE, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    return {}
+
+def save_cargos(cargos):
+    with open(CARGOS_FILE, 'w', encoding='utf-8') as f:
+        json.dump(cargos, f, indent=4, ensure_ascii=False)
+
+def log_event(evento):
+    with open(LOG_FILE, 'a', encoding='utf-8') as f:
+        timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        f.write(f'[{timestamp}] {evento}\n')
+
+class TicketButton(discord.ui.View):
+    def __init__(self, panel_type="default", button_text="🆘 CRIAR TICKET", button_color="danger"):
+        super().__init__(timeout=None)
+        self.panel_type = panel_type
+        
+        colors = {
+            "danger": discord.ButtonStyle.danger,
+            "primary": discord.ButtonStyle.primary,
+            "success": discord.ButtonStyle.success,
+            "secondary": discord.ButtonStyle.secondary
+        }
+        
+        button_style = colors.get(button_color, discord.ButtonStyle.danger)
+        
+        self.create_button = discord.ui.Button(
+            label=button_text,
+            style=button_style,
+            custom_id=f"criar_ticket_{panel_type}"
+        )
+        self.create_button.callback = self.create_ticket_callback
+        self.add_item(self.create_button)
+    
+    async def create_ticket_callback(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        
+        config = load_config()
+        guild_id = str(interaction.guild.id)
+        
+        if guild_id not in config:
+            await interaction.followup.send("Sistema de tickets não configurado neste servidor.", ephemeral=True)
+            return
+        
+        guild_config = config[guild_id]
+        categoria_id = guild_config.get("categoria_tickets")
+        
+        if not categoria_id:
+            await interaction.followup.send("Categoria de tickets não configurada.", ephemeral=True)
+            return
+        
+        categoria = bot.get_channel(int(categoria_id))
+        if categoria and isinstance(categoria, discord.CategoryChannel):
+            for channel in categoria.text_channels:
+                if channel.topic and str(interaction.user.id) in channel.topic:
+                    await interaction.followup.send(f"Você já tem um ticket aberto em {channel.mention}", ephemeral=True)
+                    return
+        
+        try:
+            overwrites = {
+                interaction.guild.default_role: discord.PermissionOverwrite(read_messages=False),
+                interaction.user: discord.PermissionOverwrite(read_messages=True, send_messages=True),
+                interaction.guild.me: discord.PermissionOverwrite(read_messages=True, send_messages=True)
+            }
+            
+            admin_roles = guild_config.get("admin_roles", [])
+            for role_id in admin_roles:
+                role = interaction.guild.get_role(int(role_id))
+                if role:
+                    overwrites[role] = discord.PermissionOverwrite(read_messages=True, send_messages=True, manage_messages=True)
+            
+            nome_canal = f"ticket-{interaction.user.name}"
+            if self.panel_type != "default":
+                nome_canal = f"{self.panel_type}-{interaction.user.name}"
+            
+            canal_ticket = await categoria.create_text_channel(
+                name=nome_canal,
+                topic=f"Ticket de {interaction.user.name} | ID: {interaction.user.id} | Tipo: {self.panel_type}",
+                overwrites=overwrites
+            )
+            
+            panel_config = {}
+            if "painels" in guild_config and self.panel_type in guild_config["painels"]:
+                panel_config = guild_config["painels"][self.panel_type]
+            
+            imagem_url = panel_config.get("imagem_url", guild_config.get("imagem_url", ""))
+            
+            mensagem_automatica = f"""**{interaction.user.mention} Olá! Agradecemos por criar um ticket. Nossa equipe de suporte foi notificada e irá atendê-lo em breve. Enquanto isso, por favor, descreva detalhadamente o seu problema.**"""
+            
+            embed_ticket = discord.Embed(
+                title=f"🎫 TICKET DE {interaction.user.name.upper()}",
+                description=f"**Olá {interaction.user.mention}!**\n\nA equipe de suporte foi notificada e irá atendê-lo em breve.\n\nPor favor, descreva seu problema abaixo:",
+                color=discord.Color.blue()
+            )
+            embed_ticket.add_field(name="🆔 Usuário", value=f"{interaction.user.mention} ({interaction.user.id})", inline=True)
+            embed_ticket.add_field(name="📅 Data", value=datetime.now().strftime("%d/%m/%Y %H:%M"), inline=True)
+            embed_ticket.add_field(name="🎯 Status", value="🟢 Aberto", inline=True)
+            embed_ticket.add_field(name="📝 Tipo", value=self.panel_type.replace("_", " ").title(), inline=True)
+            embed_ticket.set_footer(text="Use !fechar para encerrar este ticket")
+            
+            if imagem_url:
+                embed_ticket.set_image(url=imagem_url)
+            
+            view_ticket = TicketActions(interaction.user.id, canal_ticket.id)
+            
+            await canal_ticket.send(mensagem_automatica)
+            await canal_ticket.send(embed=embed_ticket, view=view_ticket)
+            
+            admin_mentions = []
+            for role_id in admin_roles:
+                role = interaction.guild.get_role(int(role_id))
+                if role and role.mentionable:
+                    admin_mentions.append(role.mention)
+            
+            if admin_mentions:
+                await canal_ticket.send(f"\n{' '.join(admin_mentions)} 👋 **NOVO TICKET CRIADO!**\nUsuário: {interaction.user.mention}\nTipo: {self.panel_type}\nPara assumir este ticket, use `!atender` ou mencione-me (@{bot.user.name})!")
+            
+            canal_logs = None
+            logs_id = guild_config.get("canal_logs")
+            if logs_id:
+                canal_logs = bot.get_channel(int(logs_id))
+                if canal_logs:
+                    await canal_logs.send(f"🎫 **NOVO TICKET CRIADO**\nUsuário: {interaction.user.mention}\nTicket: {canal_ticket.mention}\nTipo: {self.panel_type}\nID: {canal_ticket.id}")
+            
+            embed_confirma = discord.Embed(
+                title="✅ TICKET CRIADO COM SUCESSO!",
+                description=f"Olá {interaction.user.mention}, seu ticket foi criado em {canal_ticket.mention}",
+                color=discord.Color.green()
+            )
+            embed_confirma.add_field(name="📋 Informações", value=f"• Criado por: {interaction.user.mention}\n• Data: {datetime.now().strftime('%d/%m/%Y %H:%M')}\n• ID do Ticket: {canal_ticket.id}", inline=False)
+            embed_confirma.add_field(name="🛠️ Ajuda", value="Descreva seu problema detalhadamente. Um membro da equipe irá ajudá-lo em breve.", inline=False)
+            
+            await interaction.followup.send(embed=embed_confirma, ephemeral=True)
+            log_event(f"Ticket criado: {interaction.user.name} ({interaction.user.id}) - Canal: {canal_ticket.id} - Tipo: {self.panel_type}")
+            
+        except Exception as e:
+            log_event(f"ERRO ao criar ticket: {e}")
+            await interaction.followup.send(f"Erro ao criar ticket: {e}", ephemeral=True)
+
+class TicketActions(discord.ui.View):
+    def __init__(self, user_id, channel_id):
+        super().__init__(timeout=None)
+        self.user_id = user_id
+        self.channel_id = channel_id
+    
+    @discord.ui.button(label="🔒 Fechar Ticket", style=discord.ButtonStyle.danger)
+    async def fechar_ticket(self, interaction: discord.Interaction, button: discord.ui.Button):
+        config = load_config()
+        guild_id = str(interaction.guild.id)
+        is_admin = False
+        
+        if guild_id in config:
+            guild_config = config[guild_id]
+            admin_roles = guild_config.get("admin_roles", [])
+            for role_id in admin_roles:
+                role = interaction.guild.get_role(int(role_id))
+                if role and role in interaction.user.roles:
+                    is_admin = True
+                    break
+        
+        if interaction.user.id == self.user_id or is_admin or interaction.user.guild_permissions.administrator:
+            embed = discord.Embed(
+                title="🎫 TICKET FECHADO",
+                description=f"Este ticket foi fechado por {interaction.user.mention}",
+                color=discord.Color.red()
+            )
+            embed.add_field(name="⏰ Fechado em", value=datetime.now().strftime("%d/%m/%Y %H:%M:%S"), inline=True)
+            
+            await interaction.response.send_message(embed=embed)
+            
+            messages = []
+            async for message in interaction.channel.history(limit=100, oldest_first=True):
+                messages.append(f"[{message.created_at.strftime('%H:%M:%S')}] {message.author}: {message.content}")
+            
+            transcript = "\n".join(messages)
+            
+            transcript_file = f"transcript_ticket_{self.channel_id}.txt"
+            with open(transcript_file, 'w', encoding='utf-8') as f:
+                f.write(f"TRANSCRIÇÃO DO TICKET #{self.channel_id}\n")
+                f.write(f"Usuário: {interaction.user}\n")
+                f.write(f"Fechado por: {interaction.user}\n")
+                f.write(f"Data: {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}\n")
+                f.write("="*50 + "\n")
+                f.write(transcript)
+            
+            canal_logs = None
+            if guild_id in config:
+                logs_id = config[guild_id].get("canal_logs")
+                if logs_id:
+                    canal_logs = bot.get_channel(int(logs_id))
+            
+            if canal_logs:
+                file = discord.File(transcript_file, filename=f"transcript_{self.channel_id}.txt")
+                embed_log = discord.Embed(
+                    title="📄 TRANSCRIÇÃO DE TICKET",
+                    description=f"Ticket #{self.channel_id} fechado",
+                    color=discord.Color.orange()
+                )
+                await canal_logs.send(embed=embed_log, file=file)
+            
+            await asyncio.sleep(5)
+            await interaction.channel.delete()
+            
+            log_event(f"Ticket fechado: {self.channel_id} por {interaction.user.name}")
+        else:
+            await interaction.response.send_message("Apenas o criador do ticket ou administradores podem fechá-lo.", ephemeral=True)
+    
+    @discord.ui.button(label="➕ Adicionar Usuário", style=discord.ButtonStyle.success)
+    async def add_user(self, interaction: discord.Interaction, button: discord.ui.Button):
+        config = load_config()
+        guild_id = str(interaction.guild.id)
+        is_admin = False
+        
+        if guild_id in config:
+            guild_config = config[guild_id]
+            admin_roles = guild_config.get("admin_roles", [])
+            for role_id in admin_roles:
+                role = interaction.guild.get_role(int(role_id))
+                if role and role in interaction.user.roles:
+                    is_admin = True
+                    break
+        
+        if is_admin or interaction.user.guild_permissions.administrator:
+            modal = AddUserModal()
+            await interaction.response.send_modal(modal)
+        else:
+            await interaction.response.send_message("Apenas administradores podem adicionar usuários ao ticket.", ephemeral=True)
+    
+    @discord.ui.button(label="📋 Transcrição", style=discord.ButtonStyle.secondary)
+    async def transcript(self, interaction: discord.Interaction, button: discord.ui.Button):
+        config = load_config()
+        guild_id = str(interaction.guild.id)
+        is_admin = False
+        
+        if guild_id in config:
+            guild_config = config[guild_id]
+            admin_roles = guild_config.get("admin_roles", [])
+            for role_id in admin_roles:
+                role = interaction.guild.get_role(int(role_id))
+                if role and role in interaction.user.roles:
+                    is_admin = True
+                    break
+        
+        if interaction.user.id == self.user_id or is_admin or interaction.user.guild_permissions.administrator:
+            await interaction.response.defer(ephemeral=True)
+            
+            messages = []
+            async for message in interaction.channel.history(limit=200, oldest_first=True):
+                if message.attachments:
+                    attachments = " ".join([att.url for att in message.attachments])
+                    messages.append(f"[{message.created_at.strftime('%H:%M:%S')}] {message.author}: {message.content} {attachments}")
+                else:
+                    messages.append(f"[{message.created_at.strftime('%H:%M:%S')}] {message.author}: {message.content}")
+            
+            transcript = "\n".join(messages)
+            
+            transcript_file = f"transcript_ticket_{self.channel_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+            with open(transcript_file, 'w', encoding='utf-8') as f:
+                f.write(f"TRANSCRIÇÃO DO TICKET #{self.channel_id}\n")
+                f.write(f"Canal: {interaction.channel.name}\n")
+                f.write(f"Usuário: {interaction.user}\n")
+                f.write(f"Data: {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}\n")
+                f.write("="*50 + "\n")
+                f.write(transcript)
+            
+            file = discord.File(transcript_file, filename=f"transcript_{self.channel_id}.txt")
+            await interaction.followup.send("Aqui está a transcrição do ticket:", file=file, ephemeral=True)
+        else:
+            await interaction.response.send_message("Apenas o criador do ticket ou administradores podem ver a transcrição.", ephemeral=True)
+
+class CargosJogosView(discord.ui.View):
+    def __init__(self, guild_id):
+        super().__init__(timeout=None)
+        self.guild_id = guild_id
+        self.cargos_config = load_cargos()
+        
+        if guild_id in self.cargos_config:
+            cargos = self.cargos_config[guild_id]
+            for jogo, dados in cargos.items():
+                role_name = dados["role_name"]
+                emoji = dados.get("emoji", None)
+                
+                emoji_obj = None
+                if emoji:
+                    try:
+                        if emoji.isdigit():
+                            emoji_obj = bot.get_emoji(int(emoji))
+                        else:
+                            emoji_obj = emoji
+                    except:
+                        emoji_obj = emoji
+                
+                button = discord.ui.Button(
+                    label=jogo.replace("_", " ").title(),
+                    style=discord.ButtonStyle.primary,
+                    custom_id=f"cargo_{jogo}_{guild_id}",
+                    emoji=emoji_obj if emoji_obj else None
+                )
+                button.callback = self.create_callback(jogo, role_name)
+                self.add_item(button)
+    
+    def create_callback(self, jogo, role_name):
+        async def callback(interaction: discord.Interaction):
+            try:
+                role = None
+                for guild_role in interaction.guild.roles:
+                    if guild_role.name.lower() == role_name.lower():
+                        role = guild_role
+                        break
+                
+                if not role:
+                    await interaction.response.send_message(f"Cargo '{role_name}' não encontrado!", ephemeral=True)
+                    return
+                
+                member = interaction.user
+                
+                if role in member.roles:
+                    await member.remove_roles(role)
+                    embed = discord.Embed(
+                        title="🎮 CARGO REMOVIDO",
+                        description=f"Você removeu o cargo **{jogo.replace('_', ' ').title()}**",
+                        color=discord.Color.red()
+                    )
+                else:
+                    await member.add_roles(role)
+                    embed = discord.Embed(
+                        title="🎮 CARGO ADICIONADO",
+                        description=f"Você adicionou o cargo **{jogo.replace('_', ' ').title()}**",
+                        color=discord.Color.green()
+                    )
+                
+                await interaction.response.send_message(embed=embed, ephemeral=True)
+                log_event(f"Cargo {jogo} alterado por {member.name}")
+                
+            except Exception as e:
+                await interaction.response.send_message(f"Erro ao alterar cargo: {e}", ephemeral=True)
+        
+        return callback
+
+class AddUserModal(discord.ui.Modal):
+    def __init__(self):
+        super().__init__(title="Adicionar Usuário ao Ticket")
+        self.user_id = discord.ui.TextInput(
+            label="ID do Usuário",
+            placeholder="123456789012345678",
+            style=discord.TextStyle.short,
+            required=True
+        )
+        self.add_item(self.user_id)
+    
+    async def on_submit(self, interaction: discord.Interaction):
+        try:
+            user_id = int(self.user_id.value)
+            member = interaction.guild.get_member(user_id)
+            
+            if not member:
+                await interaction.response.send_message("Usuário não encontrado no servidor.", ephemeral=True)
+                return
+            
+            await interaction.channel.set_permissions(member, read_messages=True, send_messages=True)
+            
+            embed = discord.Embed(
+                title="👤 USUÁRIO ADICIONADO",
+                description=f"{member.mention} foi adicionado ao ticket por {interaction.user.mention}",
+                color=discord.Color.green()
+            )
+            
+            await interaction.response.send_message(embed=embed)
+            await interaction.channel.send(f"{member.mention} foi adicionado ao ticket!")
+            
+            log_event(f"Usuário adicionado ao ticket: {member.name} por {interaction.user.name}")
+            
+        except ValueError:
+            await interaction.response.send_message("ID inválido!", ephemeral=True)
+        except Exception as e:
+            await interaction.response.send_message(f"Erro: {e}", ephemeral=True)
+
+class ClearChatModal(discord.ui.Modal):
+    def __init__(self):
+        super().__init__(title="Limpar Chat")
+        self.quantidade = discord.ui.TextInput(
+            label="Número de mensagens (1-100)",
+            placeholder="Digite um número entre 1 e 100",
+            style=discord.TextStyle.short,
+            required=True
+        )
+        self.add_item(self.quantidade)
+    
+    async def on_submit(self, interaction: discord.Interaction):
+        try:
+            qtd = int(self.quantidade.value)
+            if qtd < 1 or qtd > 100:
+                await interaction.response.send_message("Digite um número entre 1 e 100.", ephemeral=True)
+                return
+            
+            if not interaction.user.guild_permissions.manage_messages:
+                await interaction.response.send_message("Você não tem permissão para limpar mensagens.", ephemeral=True)
+                return
+            
+            await interaction.response.defer(ephemeral=True)
+            
+            deleted = await interaction.channel.purge(limit=qtd)
+            
+            embed = discord.Embed(
+                title="🧹 CHAT LIMPO",
+                description=f"**{len(deleted)}** mensagens foram removidas por {interaction.user.mention}",
+                color=discord.Color.green()
+            )
+            
+            msg = await interaction.channel.send(embed=embed)
+            await interaction.followup.send(f"✅ {len(deleted)} mensagens foram removidas!", ephemeral=True)
+            
+            log_event(f"Chat limpo por {interaction.user.name}: {len(deleted)} mensagens em {interaction.channel.name}")
+            
+            await asyncio.sleep(5)
+            await msg.delete()
+            
+        except ValueError:
+            await interaction.response.send_message("Digite um número válido.", ephemeral=True)
+        except Exception as e:
+            await interaction.response.send_message(f"Erro: {e}", ephemeral=True)
+
+class AdminPanel(discord.ui.View):
+    def __init__(self, user_id):
+        super().__init__(timeout=60)
+        self.user_id = user_id
+    
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        return interaction.user.id == self.user_id
+    
+    @discord.ui.button(label="⚙️ Configurar Sistema", style=discord.ButtonStyle.primary)
+    async def config_system(self, interaction: discord.Interaction, button: discord.ui.Button):
+        embed = discord.Embed(
+            title="⚙️ CONFIGURAÇÃO DO SISTEMA",
+            description="Escolha uma opção para configurar:",
+            color=discord.Color.blue()
+        )
+        
+        config = load_config()
+        guild_id = str(interaction.guild.id)
+        if guild_id in config and "imagem_url" in config[guild_id]:
+            embed.set_image(url=config[guild_id]["imagem_url"])
+        
+        view = ConfigMenu(interaction.user.id)
+        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+    
+    @discord.ui.button(label="👥 Gerenciar Tickets", style=discord.ButtonStyle.secondary)
+    async def manage_tickets(self, interaction: discord.Interaction, button: discord.ui.Button):
+        embed = discord.Embed(
+            title="👥 GERENCIAMENTO DE TICKETS",
+            description="Escolha uma ação:",
+            color=discord.Color.green()
+        )
+        
+        view = TicketManagement(interaction.user.id)
+        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+    
+    @discord.ui.button(label="📊 Ver Status", style=discord.ButtonStyle.success)
+    async def view_status(self, interaction: discord.Interaction, button: discord.ui.Button):
+        config = load_config()
+        guild_id = str(interaction.guild.id)
+        
+        if guild_id not in config:
+            embed = discord.Embed(
+                title="📊 STATUS DO SISTEMA",
+                description="Sistema não configurado",
+                color=discord.Color.red()
+            )
+        else:
+            guild_config = config[guild_id]
+            categoria_id = guild_config.get("categoria_tickets")
+            
+            tickets_abertos = 0
+            if categoria_id:
+                categoria = bot.get_channel(int(categoria_id))
+                if categoria and isinstance(categoria, discord.CategoryChannel):
+                    tickets_abertos = len([c for c in categoria.text_channels if "ticket" in c.name])
+            
+            embed = discord.Embed(
+                title="📊 STATUS DO SISTEMA DE TICKETS",
+                color=discord.Color.green()
+            )
+            
+            if "imagem_url" in guild_config:
+                embed.set_image(url=guild_config["imagem_url"])
+            
+            embed.add_field(name="🎯 Status", value="🟢 Ativo", inline=True)
+            embed.add_field(name="🎫 Tickets Abertos", value=f"{tickets_abertos}", inline=True)
+            embed.add_field(name="📁 Categoria", value=f"<#{categoria_id}>" if categoria_id else "Não configurada", inline=True)
+            embed.add_field(name="🖼️ Imagem", value="Configurada" if guild_config.get("imagem_url") else "Não configurada", inline=True)
+            embed.add_field(name="📝 Logs", value="Ativo", inline=True)
+            embed.add_field(name="🕒 Última atualização", value=datetime.now().strftime("%d/%m/%Y %H:%M"), inline=True)
+            
+            admin_roles = guild_config.get("admin_roles", [])
+            embed.add_field(name="👑 Administradores", value=f"{len(admin_roles)} cargo(s) configurado(s)", inline=False)
+        
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+    
+    @discord.ui.button(label="🧹 Limpar Chat", style=discord.ButtonStyle.danger)
+    async def clear_chat(self, interaction: discord.Interaction, button: discord.ui.Button):
+        modal = ClearChatModal()
+        await interaction.response.send_modal(modal)
+    
+    @discord.ui.button(label="🎮 Gerenciar Cargos", style=discord.ButtonStyle.success)
+    async def manage_roles(self, interaction: discord.Interaction, button: discord.ui.Button):
+        embed = discord.Embed(
+            title="🎮 GERENCIAMENTO DE CARGOS",
+            description="Gerencie os cargos de jogos do servidor:",
+            color=discord.Color.purple()
+        )
+        
+        cargos_config = load_cargos()
+        guild_id = str(interaction.guild.id)
+        
+        if guild_id in cargos_config and cargos_config[guild_id]:
+            cargos = cargos_config[guild_id]
+            lista_cargos = []
+            for jogo, dados in cargos.items():
+                role_name = dados["role_name"]
+                emoji = dados.get("emoji", "❓")
+                lista_cargos.append(f"• **{jogo.replace('_', ' ').title()}** → `{role_name}` {emoji}")
+            
+            embed.add_field(
+                name="📋 Cargos Configurados",
+                value="\n".join(lista_cargos),
+                inline=False
+            )
+        else:
+            embed.add_field(
+                name="ℹ️ Informação",
+                value="Nenhum cargo de jogo configurado ainda.",
+                inline=False
+            )
+        
+        view = CargosManagement(interaction.user.id)
+        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+
+class ConfigMenu(discord.ui.View):
+    def __init__(self, user_id):
+        super().__init__(timeout=60)
+        self.user_id = user_id
+    
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        return interaction.user.id == self.user_id
+    
+    @discord.ui.button(label="🖼️ Configurar Imagem", style=discord.ButtonStyle.primary)
+    async def set_image(self, interaction: discord.Interaction, button: discord.ui.Button):
+        modal = ImageConfigModal()
+        await interaction.response.send_modal(modal)
+    
+    @discord.ui.button(label="📁 Configurar Categoria", style=discord.ButtonStyle.primary)
+    async def set_category(self, interaction: discord.Interaction, button: discord.ui.Button):
+        modal = CategoryConfigModal()
+        await interaction.response.send_modal(modal)
+    
+    @discord.ui.button(label="👑 Configurar Admins", style=discord.ButtonStyle.primary)
+    async def set_admins(self, interaction: discord.Interaction, button: discord.ui.Button):
+        modal = AdminRolesModal()
+        await interaction.response.send_modal(modal)
+    
+    @discord.ui.button(label="📝 Configurar Logs", style=discord.ButtonStyle.primary)
+    async def set_logs(self, interaction: discord.Interaction, button: discord.ui.Button):
+        modal = LogsChannelModal()
+        await interaction.response.send_modal(modal)
+
+class CargosManagement(discord.ui.View):
+    def __init__(self, user_id):
+        super().__init__(timeout=60)
+        self.user_id = user_id
+    
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        return interaction.user.id == self.user_id
+    
+    @discord.ui.button(label="➕ Adicionar Cargo", style=discord.ButtonStyle.success)
+    async def add_role(self, interaction: discord.Interaction, button: discord.ui.Button):
+        embed = discord.Embed(
+            title="➕ ADICIONAR CARGO",
+            description="Use os botões abaixo para adicionar cargos de jogos pré-configurados:",
+            color=discord.Color.green()
+        )
+        
+        view = JogosRapidosView(interaction.user.id)
+        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+    
+    @discord.ui.button(label="✏️ Editar Cargo", style=discord.ButtonStyle.primary)
+    async def edit_role(self, interaction: discord.Interaction, button: discord.ui.Button):
+        modal = EditCargoModal()
+        await interaction.response.send_modal(modal)
+    
+    @discord.ui.button(label="❌ Remover Cargo", style=discord.ButtonStyle.danger)
+    async def remove_role(self, interaction: discord.Interaction, button: discord.ui.Button):
+        modal = RemoveCargoModal()
+        await interaction.response.send_modal(modal)
+
+class JogosRapidosView(discord.ui.View):
+    def __init__(self, user_id):
+        super().__init__(timeout=60)
+        self.user_id = user_id
+        
+        jogos = [
+            ("🎮 Minecraft", "minecraft"),
+            ("🤖 Roblox", "roblox"),
+            ("🔫 CS:GO", "csgo"),
+            ("⚔️ Valorant", "valorant"),
+            ("🏆 LOL", "lol"),
+            ("💰 GTA V", "gta_v"),
+            ("🏰 Fortnite", "fortnite"),
+            ("👻 Among Us", "among_us"),
+            ("🎯 Call of Duty", "cod"),
+            ("⚽ FIFA", "fifa"),
+            ("🚗 Rocket League", "rocket_league"),
+            ("🛡️ Overwatch", "overwatch")
+        ]
+        
+        for i in range(0, len(jogos), 6):
+            for nome, jogo_id in jogos[i:i+6]:
+                button = discord.ui.Button(
+                    label=nome,
+                    style=discord.ButtonStyle.secondary,
+                    custom_id=f"rapido_{jogo_id}_{user_id}"
+                )
+                button.callback = self.create_callback(jogo_id, nome)
+                self.add_item(button)
+        
+        custom_button = discord.ui.Button(
+            label="🎨 Personalizado",
+            style=discord.ButtonStyle.primary,
+            custom_id=f"rapido_custom_{user_id}"
+        )
+        custom_button.callback = self.custom_callback
+        self.add_item(custom_button)
+    
+    def create_callback(self, jogo_id, nome_jogo):
+        async def callback(interaction: discord.Interaction):
+            modal = AddCargoRapidoModal(jogo_id, nome_jogo)
+            await interaction.response.send_modal(modal)
+        return callback
+    
+    async def custom_callback(self, interaction: discord.Interaction):
+        modal = AddCargoPersonalizadoModal()
+        await interaction.response.send_modal(modal)
+
+class ImageConfigModal(discord.ui.Modal):
+    def __init__(self):
+        super().__init__(title="Configurar Imagem")
+        self.image_url = discord.ui.TextInput(
+            label="URL da Imagem",
+            placeholder="https://exemplo.com/imagem.jpg",
+            style=discord.TextStyle.short,
+            required=True,
+            max_length=500
+        )
+        self.add_item(self.image_url)
+    
+    async def on_submit(self, interaction: discord.Interaction):
+        config = load_config()
+        guild_id = str(interaction.guild.id)
+        
+        if guild_id not in config:
+            config[guild_id] = {}
+        
+        config[guild_id]["imagem_url"] = str(self.image_url.value)
+        save_config(config)
+        
+        log_event(f"Imagem configurada por {interaction.user.name} em {interaction.guild.name}")
+        await interaction.response.send_message(
+            f"Imagem configurada com sucesso!",
+            ephemeral=True
+        )
+
+class CategoryConfigModal(discord.ui.Modal):
+    def __init__(self):
+        super().__init__(title="Configurar Categoria")
+        self.category_id = discord.ui.TextInput(
+            label="ID da Categoria de Tickets",
+            placeholder="123456789012345678",
+            style=discord.TextStyle.short,
+            required=True
+        )
+        self.add_item(self.category_id)
+    
+    async def on_submit(self, interaction: discord.Interaction):
+        try:
+            category_id = int(self.category_id.value)
+            category = bot.get_channel(category_id)
+            
+            if not category or not isinstance(category, discord.CategoryChannel):
+                await interaction.response.send_message("ID inválido ou não é uma categoria!", ephemeral=True)
+                return
+            
+            config = load_config()
+            guild_id = str(interaction.guild.id)
+            
+            if guild_id not in config:
+                config[guild_id] = {}
+            
+            config[guild_id]["categoria_tickets"] = str(category_id)
+            save_config(config)
+            
+            log_event(f"Categoria configurada por {interaction.user.name} em {interaction.guild.name}: {category.name}")
+            await interaction.response.send_message(
+                f"Categoria de tickets configurada: {category.mention}",
+                ephemeral=True
+            )
+            
+        except ValueError:
+            await interaction.response.send_message("ID inválido!", ephemeral=True)
+
+class AdminRolesModal(discord.ui.Modal):
+    def __init__(self):
+        super().__init__(title="Configurar Cargos de Admin")
+        self.roles_mentions = discord.ui.TextInput(
+            label="Mencione os Cargos",
+            placeholder="@Admin @Moderador @Suporte",
+            style=discord.TextStyle.short,
+            required=True
+        )
+        self.add_item(self.roles_mentions)
+    
+    async def on_submit(self, interaction: discord.Interaction):
+        try:
+            content = self.roles_mentions.value
+            role_ids = []
+            
+            matches = re.findall(r'<@&(\d+)>', content)
+            
+            for match in matches:
+                role = interaction.guild.get_role(int(match))
+                if role:
+                    role_ids.append(str(role.id))
+            
+            if not role_ids:
+                await interaction.response.send_message(
+                    "Nenhum cargo válido mencionado! Use @Cargo para mencionar cargos.",
+                    ephemeral=True
+                )
+                return
+            
+            config = load_config()
+            guild_id = str(interaction.guild.id)
+            
+            if guild_id not in config:
+                config[guild_id] = {}
+            
+            config[guild_id]["admin_roles"] = role_ids
+            save_config(config)
+            
+            roles_mentions = []
+            for role_id in role_ids:
+                role = interaction.guild.get_role(int(role_id))
+                if role:
+                    roles_mentions.append(role.mention)
+            
+            log_event(f"Admin roles configurados por {interaction.user.name}: {len(role_ids)} cargos")
+            await interaction.response.send_message(
+                f"{len(role_ids)} cargo(s) de administrador configurado(s) com sucesso!\n\n" +
+                "Cargos: " + ", ".join(roles_mentions),
+                ephemeral=True
+            )
+            
+        except Exception as e:
+            await interaction.response.send_message(f"Erro: {e}", ephemeral=True)
+
+class LogsChannelModal(discord.ui.Modal):
+    def __init__(self):
+        super().__init__(title="Configurar Canal de Logs")
+        self.channel_mention = discord.ui.TextInput(
+            label="Mencione o Canal",
+            placeholder="#canal-de-logs",
+            style=discord.TextStyle.short,
+            required=True
+        )
+        self.add_item(self.channel_mention)
+    
+    async def on_submit(self, interaction: discord.Interaction):
+        try:
+            content = self.channel_mention.value
+            
+            match = re.search(r'<#(\d+)>', content)
+            
+            if not match:
+                await interaction.response.send_message("Mencione um canal usando #canal!", ephemeral=True)
+                return
+            
+            channel_id = int(match.group(1))
+            channel = bot.get_channel(channel_id)
+            
+            if not channel or not isinstance(channel, discord.TextChannel):
+                await interaction.response.send_message("Canal inválido ou não é um canal de texto!", ephemeral=True)
+                return
+            
+            config = load_config()
+            guild_id = str(interaction.guild.id)
+            
+            if guild_id not in config:
+                config[guild_id] = {}
+            
+            config[guild_id]["canal_logs"] = str(channel_id)
+            save_config(config)
+            
+            log_event(f"Canal de logs configurado por {interaction.user.name}: {channel.name}")
+            await interaction.response.send_message(
+                f"Canal de logs configurado: {channel.mention}",
+                ephemeral=True
+            )
+            
+        except Exception as e:
+            await interaction.response.send_message(f"Erro: {e}", ephemeral=True)
+
+class AddCargoRapidoModal(discord.ui.Modal):
+    def __init__(self, jogo_id, nome_jogo):
+        super().__init__(title=f"Adicionar {nome_jogo}")
+        self.jogo_id = jogo_id
+        self.nome_jogo = nome_jogo
+        
+        self.cargo_nome = discord.ui.TextInput(
+            label="Nome do Cargo",
+            placeholder=f"Ex: {nome_jogo}, Jogador {nome_jogo}, etc.",
+            style=discord.TextStyle.short,
+            required=True
+        )
+        
+        self.emoji = discord.ui.TextInput(
+            label="Emoji (ID ou Unicode)",
+            placeholder="ID do emoji OU emoji padrão (ex: 123456789 ou 🎮)",
+            style=discord.TextStyle.short,
+            required=False
+        )
+        
+        self.add_item(self.cargo_nome)
+        self.add_item(self.emoji)
+    
+    async def on_submit(self, interaction: discord.Interaction):
+        try:
+            cargo_nome = self.cargo_nome.value.strip()
+            emoji_input = self.emoji.value.strip() if self.emoji.value else None
+            
+            emoji_final = None
+            if emoji_input:
+                if emoji_input.isdigit():
+                    emoji_obj = bot.get_emoji(int(emoji_input))
+                    if emoji_obj:
+                        emoji_final = emoji_input
+                    else:
+                        await interaction.response.send_message(
+                            "⚠️ Não consegui encontrar este emoji personalizado no bot.",
+                            ephemeral=True
+                        )
+                else:
+                    emoji_final = emoji_input
+            
+            role = None
+            for guild_role in interaction.guild.roles:
+                if guild_role.name.lower() == cargo_nome.lower():
+                    role = guild_role
+                    break
+            
+            if not role:
+                try:
+                    role = await interaction.guild.create_role(
+                        name=cargo_nome,
+                        color=discord.Color.random(),
+                        mentionable=True,
+                        reason=f"Cargo criado por {interaction.user.name} para jogo {self.nome_jogo}"
+                    )
+                    cargo_criado = True
+                except Exception as e:
+                    await interaction.response.send_message(
+                        f"Erro ao criar cargo: {e}\n\nCrie o cargo manualmente primeiro!",
+                        ephemeral=True
+                    )
+                    return
+            else:
+                cargo_criado = False
+            
+            cargos = load_cargos()
+            guild_id = str(interaction.guild.id)
+            
+            if guild_id not in cargos:
+                cargos[guild_id] = {}
+            
+            cargos[guild_id][self.jogo_id] = {
+                "role_name": cargo_nome,
+                "emoji": emoji_final
+            }
+            save_cargos(cargos)
+            
+            embed = discord.Embed(
+                title="✅ CARGO CONFIGURADO",
+                color=discord.Color.green()
+            )
+            
+            if cargo_criado:
+                embed.description = f"Cargo **{self.nome_jogo}** criado e configurado como {role.mention}"
+            else:
+                embed.description = f"Cargo **{self.nome_jogo}** configurado para {role.mention}"
+            
+            embed.add_field(name="🎮 Jogo", value=self.nome_jogo, inline=True)
+            embed.add_field(name="📛 Nome do Cargo", value=cargo_nome, inline=True)
+            embed.add_field(name="😃 Emoji", value=emoji_final if emoji_final else "Nenhum", inline=True)
+            embed.add_field(name="🆔 ID Interno", value=self.jogo_id, inline=True)
+            
+            if emoji_final and emoji_final.isdigit():
+                emoji_obj = bot.get_emoji(int(emoji_final))
+                if emoji_obj:
+                    embed.add_field(name="🔍 Emoji Visual", value=f"{str(emoji_obj)}", inline=True)
+            
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            log_event(f"Cargo configurado: {self.jogo_id} -> {cargo_nome} (emoji: {emoji_final})")
+            
+        except Exception as e:
+            await interaction.response.send_message(f"Erro: {e}", ephemeral=True)
+
+class AddCargoPersonalizadoModal(discord.ui.Modal):
+    def __init__(self):
+        super().__init__(title="Adicionar Cargo Personalizado")
+        
+        self.nome_jogo = discord.ui.TextInput(
+            label="Nome do Jogo",
+            placeholder="Ex: Minecraft, Roblox, CS:GO",
+            style=discord.TextStyle.short,
+            required=True
+        )
+        
+        self.cargo_nome = discord.ui.TextInput(
+            label="Nome do Cargo",
+            placeholder="Ex: Jogador Minecraft, Roblox Player, etc.",
+            style=discord.TextStyle.short,
+            required=True
+        )
+        
+        self.emoji = discord.ui.TextInput(
+            label="Emoji (ID ou Unicode)",
+            placeholder="ID do emoji OU emoji padrão (ex: 123456789 ou 🎮)",
+            style=discord.TextStyle.short,
+            required=False
+        )
+        
+        self.add_item(self.nome_jogo)
+        self.add_item(self.cargo_nome)
+        self.add_item(self.emoji)
+    
+    async def on_submit(self, interaction: discord.Interaction):
+        try:
+            nome_jogo = self.nome_jogo.value.strip()
+            cargo_nome = self.cargo_nome.value.strip()
+            emoji_input = self.emoji.value.strip() if self.emoji.value else None
+            jogo_id = nome_jogo.lower().replace(" ", "_")
+            
+            emoji_final = None
+            if emoji_input:
+                if emoji_input.isdigit():
+                    emoji_obj = bot.get_emoji(int(emoji_input))
+                    if emoji_obj:
+                        emoji_final = emoji_input
+                    else:
+                        await interaction.response.send_message(
+                            "⚠️ Não consegui encontrar este emoji personalizado no bot.",
+                            ephemeral=True
+                        )
+                else:
+                    emoji_final = emoji_input
+            
+            role = None
+            for guild_role in interaction.guild.roles:
+                if guild_role.name.lower() == cargo_nome.lower():
+                    role = guild_role
+                    break
+            
+            if not role:
+                try:
+                    role = await interaction.guild.create_role(
+                        name=cargo_nome,
+                        color=discord.Color.random(),
+                        mentionable=True,
+                        reason=f"Cargo criado por {interaction.user.name} para jogo {nome_jogo}"
+                    )
+                    cargo_criado = True
+                except Exception as e:
+                    await interaction.response.send_message(
+                        f"Erro ao criar cargo: {e}\n\nCrie o cargo manualmente primeiro!",
+                        ephemeral=True
+                    )
+                    return
+            else:
+                cargo_criado = False
+            
+            cargos = load_cargos()
+            guild_id = str(interaction.guild.id)
+            
+            if guild_id not in cargos:
+                cargos[guild_id] = {}
+            
+            cargos[guild_id][jogo_id] = {
+                "role_name": cargo_nome,
+                "emoji": emoji_final
+            }
+            save_cargos(cargos)
+            
+            embed = discord.Embed(
+                title="✅ CARGO PERSONALIZADO ADICIONADO",
+                color=discord.Color.green()
+            )
+            
+            if cargo_criado:
+                embed.description = f"Cargo **{nome_jogo}** criado e configurado como {role.mention}"
+            else:
+                embed.description = f"Cargo **{nome_jogo}** configurado para {role.mention}"
+            
+            embed.add_field(name="🎮 Jogo", value=nome_jogo, inline=True)
+            embed.add_field(name="📛 Nome do Cargo", value=cargo_nome, inline=True)
+            embed.add_field(name="😃 Emoji", value=emoji_final if emoji_final else "Nenhum", inline=True)
+            embed.add_field(name="🆔 ID Interno", value=jogo_id, inline=True)
+            
+            if emoji_final and emoji_final.isdigit():
+                emoji_obj = bot.get_emoji(int(emoji_final))
+                if emoji_obj:
+                    embed.add_field(name="🔍 Emoji Visual", value=f"{str(emoji_obj)}", inline=True)
+            
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            log_event(f"Cargo personalizado adicionado: {jogo_id} -> {cargo_nome} (emoji: {emoji_final})")
+            
+        except Exception as e:
+            await interaction.response.send_message(f"Erro: {e}", ephemeral=True)
+
+class EditCargoModal(discord.ui.Modal):
+    def __init__(self):
+        super().__init__(title="Editar Cargo de Jogo")
+        
+        self.nome_jogo = discord.ui.TextInput(
+            label="Nome do Jogo a Editar",
+            placeholder="Digite o nome exato do jogo",
+            style=discord.TextStyle.short,
+            required=True
+        )
+        
+        self.novo_cargo_nome = discord.ui.TextInput(
+            label="Novo Nome do Cargo",
+            placeholder="Novo nome para o cargo",
+            style=discord.TextStyle.short,
+            required=True
+        )
+        
+        self.novo_emoji = discord.ui.TextInput(
+            label="Novo Emoji (ID ou Unicode)",
+            placeholder="ID do emoji OU emoji padrão (ex: 123456789 ou 🎮)",
+            style=discord.TextStyle.short,
+            required=False
+        )
+        
+        self.add_item(self.nome_jogo)
+        self.add_item(self.novo_cargo_nome)
+        self.add_item(self.novo_emoji)
+    
+    async def on_submit(self, interaction: discord.Interaction):
+        nome_jogo = self.nome_jogo.value.strip().lower().replace(" ", "_")
+        novo_cargo_nome = self.novo_cargo_nome.value.strip()
+        novo_emoji_input = self.novo_emoji.value.strip() if self.novo_emoji.value else None
+        
+        novo_emoji_final = None
+        if novo_emoji_input:
+            if novo_emoji_input.isdigit():
+                emoji_obj = bot.get_emoji(int(novo_emoji_input))
+                if emoji_obj:
+                    novo_emoji_final = novo_emoji_input
+            else:
+                novo_emoji_final = novo_emoji_input
+        
+        cargos = load_cargos()
+        guild_id = str(interaction.guild.id)
+        
+        if guild_id not in cargos or nome_jogo not in cargos[guild_id]:
+            await interaction.response.send_message(f"Jogo '{nome_jogo}' não encontrado!", ephemeral=True)
+            return
+        
+        novo_role = None
+        for guild_role in interaction.guild.roles:
+            if guild_role.name.lower() == novo_cargo_nome.lower():
+                novo_role = guild_role
+                break
+        
+        if not novo_role:
+            try:
+                novo_role = await interaction.guild.create_role(
+                    name=novo_cargo_nome,
+                    color=discord.Color.random(),
+                    mentionable=True,
+                    reason=f"Cargo editado por {interaction.user.name} para jogo {nome_jogo}"
+                )
+                cargo_criado = True
+            except Exception as e:
+                await interaction.response.send_message(
+                    f"Erro ao criar cargo: {e}\n\nCrie o cargo manualmente primeiro!",
+                    ephemeral=True
+                )
+                return
+        else:
+            cargo_criado = False
+        
+        cargos[guild_id][nome_jogo]["role_name"] = novo_cargo_nome
+        cargos[guild_id][nome_jogo]["emoji"] = novo_emoji_final
+        save_cargos(cargos)
+        
+        embed = discord.Embed(
+            title="✅ CARGO ATUALIZADO",
+            color=discord.Color.green()
+        )
+        
+        if cargo_criado:
+            embed.description = f"Cargo **{nome_jogo.replace('_', ' ').title()}** atualizado para {novo_role.mention} (criado)"
+        else:
+            embed.description = f"Cargo **{nome_jogo.replace('_', ' ').title()}** atualizado para {novo_role.mention}"
+        
+        embed.add_field(name="📛 Novo Nome", value=novo_cargo_nome, inline=True)
+        embed.add_field(name="😃 Novo Emoji", value=novo_emoji_final if novo_emoji_final else "Nenhum", inline=True)
+        
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+        log_event(f"Cargo editado: {nome_jogo} -> {novo_cargo_nome} (emoji: {novo_emoji_final})")
+
+class RemoveCargoModal(discord.ui.Modal):
+    def __init__(self):
+        super().__init__(title="Remover Cargo de Jogo")
+        self.nome_jogo = discord.ui.TextInput(
+            label="Nome do Jogo a Remover",
+            placeholder="Digite o nome exato do jogo",
+            style=discord.TextStyle.short,
+            required=True
+        )
+        self.add_item(self.nome_jogo)
+    
+    async def on_submit(self, interaction: discord.Interaction):
+        nome_jogo = self.nome_jogo.value.strip().lower().replace(" ", "_")
+        
+        cargos = load_cargos()
+        guild_id = str(interaction.guild.id)
+        
+        if guild_id not in cargos or nome_jogo not in cargos[guild_id]:
+            await interaction.response.send_message(f"Jogo '{nome_jogo}' não encontrado!", ephemeral=True)
+            return
+        
+        cargo_data = cargos[guild_id][nome_jogo]
+        nome_cargo = cargo_data["role_name"]
+        emoji_cargo = cargo_data.get("emoji", "Nenhum")
+        
+        del cargos[guild_id][nome_jogo]
+        
+        if not cargos[guild_id]:
+            del cargos[guild_id]
+        
+        save_cargos(cargos)
+        
+        embed = discord.Embed(
+            title="✅ CARGO REMOVIDO",
+            description=f"Cargo **{nome_jogo.replace('_', ' ').title()}** removido com sucesso!",
+            color=discord.Color.red()
+        )
+        embed.add_field(name="📛 Cargo", value=nome_cargo, inline=True)
+        embed.add_field(name="😃 Emoji", value=emoji_cargo, inline=True)
+        
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+        log_event(f"Cargo removido: {nome_jogo}")
+
+@bot.tree.command(name="admin", description="Painel de administração do Sistema")
+@commands.has_permissions(administrator=True)
+async def admin_panel_cmd(interaction: discord.Interaction):
+    config = load_config()
+    guild_id = str(interaction.guild.id)
+    
+    imagem_url = None
+    if guild_id in config and "imagem_url" in config[guild_id]:
+        imagem_url = config[guild_id]["imagem_url"]
+    
+    embed = discord.Embed(
+        title="⚙️ PAINEL DE ADMINISTRAÇÃO - SISTEMA COMPLETO",
+        description="Gerencie todos os sistemas do bot",
+        color=discord.Color.blue(),
+        timestamp=datetime.now()
+    )
+    
+    embed.add_field(
+        name="🎫 Sistema de Tickets", 
+        value="Configure e gerencie o sistema de tickets", 
+        inline=False
+    )
+    
+    embed.add_field(
+        name="🎮 Sistema de Cargos", 
+        value="Gerencie cargos de jogos para os membros", 
+        inline=False
+    )
+    
+    embed.add_field(
+        name="📊 Monitoramento", 
+        value="Acompanhe status, logs e estatísticas", 
+        inline=False
+    )
+    
+    embed.add_field(
+        name="🧹 Ferramentas",
+        value="Limpeza de chat e outras ferramentas",
+        inline=False
+    )
+    
+    if imagem_url:
+        embed.set_image(url=imagem_url)
+    
+    embed.set_footer(text=f"Solicitado por {interaction.user.name}")
+    
+    view = AdminPanel(interaction.user.id)
+    await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+
+@bot.tree.command(name="criar_painel_tickets", description="Criar painel de criação de tickets")
+@commands.has_permissions(administrator=True)
+async def criar_painel_tickets_cmd(interaction: discord.Interaction, 
+                                   canal: discord.TextChannel = None):
+    target_channel = canal or interaction.channel
+    config = load_config()
+    guild_id = str(interaction.guild.id)
+    
+    if guild_id not in config:
+        config[guild_id] = {
+            "categoria_tickets": None,
+            "imagem_url": "",
+            "admin_roles": [],
+            "canal_logs": None
+        }
+        save_config(config)
+    
+    titulo = "🎫 SISTEMA DE TICKETS DE SUPORTE"
+    descricao = "**Precisa de ajuda?** Clique no botão abaixo para criar um ticket de suporte privado!"
+    imagem_url = config[guild_id].get("imagem_url", "")
+    
+    embed = discord.Embed(
+        title=titulo,
+        description=descricao,
+        color=discord.Color.blue()
+    )
+    
+    if imagem_url:
+        embed.set_image(url=imagem_url)
+    
+    embed.add_field(
+        name="📋 Como funciona?",
+        value="1. Clique em **'CRIAR TICKET'** abaixo\n2. Um canal privado será criado\n3. Descreva seu problema\n4. Aguarde atendimento da equipe",
+        inline=False
+    )
+    
+    embed.add_field(
+        name="⏰ Tempo de Resposta",
+        value="Nossa equipe responderá o mais rápido possível!",
+        inline=False
+    )
+    
+    embed.add_field(
+        name="📢 Importante",
+        value="• Não abuse do sistema\n• Seja claro na descrição\n• Aguarde pacientemente\n• Use apenas para suporte",
+        inline=False
+    )
+    
+    embed.set_footer(text="Sistema de Tickets Automático")
+    
+    view = TicketButton()
+    
+    await target_channel.send(embed=embed, view=view)
+    
+    await interaction.response.send_message(
+        f"Painel de tickets criado em {target_channel.mention}",
+        ephemeral=True
+    )
+    
+    log_event(f"Painel de tickets criado por {interaction.user.name} em {interaction.guild.name}")
+
+@bot.tree.command(name="painel_cargos", description="Criar painel de cargos para jogos")
+@commands.has_permissions(administrator=True)
+async def painel_cargos_cmd(interaction: discord.Interaction, canal: discord.TextChannel = None):
+    target_channel = canal or interaction.channel
+    guild_id = str(interaction.guild.id)
+    
+    cargos = load_cargos()
+    
+    if guild_id not in cargos or not cargos[guild_id]:
+        await interaction.response.send_message(
+            "Nenhum cargo de jogo configurado ainda.",
+            ephemeral=True
+        )
+        return
+    
+    embed = discord.Embed(
+        title="🎮 SELECIONE SEUS JOGOS FAVORITOS",
+        description="Clique nos botões abaixo para adicionar ou remover os cargos dos jogos que você joga!",
+        color=discord.Color.purple()
+    )
+    
+    jogos_lista = []
+    for jogo, dados in cargos[guild_id].items():
+        role_name = dados["role_name"]
+        emoji = dados.get("emoji", "❓")
+        jogos_lista.append(f"• **{jogo.replace('_', ' ').title()}** → `{role_name}` {emoji}")
+    
+    if jogos_lista:
+        embed.add_field(
+            name="🎯 Jogos Disponíveis",
+            value="\n".join(jogos_lista),
+            inline=False
+        )
+    
+    embed.add_field(
+        name="📋 Como funciona?",
+        value="1. Clique no botão do jogo que você joga\n2. Você receberá o cargo automaticamente\n3. Clique novamente para remover o cargo\n4. Você pode ter múltiplos cargos!",
+        inline=False
+    )
+    
+    embed.set_footer(text="Sistema de Cargos Automático • Clique nos botões abaixo")
+    
+    view = CargosJogosView(guild_id)
+    
+    await target_channel.send(embed=embed, view=view)
+    await interaction.response.send_message(
+        f"Painel de cargos criado em {target_channel.mention}",
+        ephemeral=True
+    )
+    
+    log_event(f"Painel de cargos criado por {interaction.user.name}")
+
+@bot.tree.command(name="fechar", description="Fechar o ticket atual")
+async def fechar_ticket_cmd(interaction: discord.Interaction):
+    config = load_config()
+    guild_id = str(interaction.guild.id)
+    
+    if guild_id not in config:
+        await interaction.response.send_message("Este não é um canal de ticket ou sistema não configurado.", ephemeral=True)
+        return
+    
+    categoria_id = config[guild_id].get("categoria_tickets")
+    if not categoria_id or interaction.channel.category_id != int(categoria_id):
+        await interaction.response.send_message("Este comando só funciona em canais de ticket.", ephemeral=True)
+        return
+    
+    creator_id = None
+    if interaction.channel.topic:
+        match = re.search(r'ID: (\d+)', interaction.channel.topic)
+        if match:
+            creator_id = int(match.group(1))
+    
+    is_admin = False
+    if guild_id in config:
+        admin_roles = config[guild_id].get("admin_roles", [])
+        for role_id in admin_roles:
+            role = interaction.guild.get_role(int(role_id))
+            if role and role in interaction.user.roles:
+                is_admin = True
+                break
+    
+    if interaction.user.id != creator_id and not is_admin and not interaction.user.guild_permissions.administrator:
+        await interaction.response.send_message("Apenas o criador do ticket ou administradores podem fechá-lo.", ephemeral=True)
+        return
+    
+    embed = discord.Embed(
+        title="🎫 TICKET FECHADO",
+        description=f"Este ticket foi fechado por {interaction.user.mention}",
+        color=discord.Color.red()
+    )
+    embed.add_field(name="⏰ Fechado em", value=datetime.now().strftime("%d/%m/%Y %H:%M:%S"), inline=True)
+    
+    await interaction.response.send_message(embed=embed)
+    
+    messages = []
+    async for message in interaction.channel.history(limit=200, oldest_first=True):
+        if message.attachments:
+            attachments = " ".join([att.url for att in message.attachments])
+            messages.append(f"[{message.created_at.strftime('%H:%M:%S')}] {message.author}: {message.content} {attachments}")
+        else:
+            messages.append(f"[{message.created_at.strftime('%H:%M:%S')}] {message.author}: {message.content}")
+    
+    transcript = "\n".join(messages)
+    transcript_file = f"transcript_ticket_{interaction.channel.id}.txt"
+    
+    with open(transcript_file, 'w', encoding='utf-8') as f:
+        f.write(f"TRANSCRIÇÃO DO TICKET #{interaction.channel.id}\n")
+        f.write(f"Canal: {interaction.channel.name}\n")
+        f.write(f"Criado por: {creator_id}\n")
+        f.write(f"Fechado por: {interaction.user}\n")
+        f.write(f"Data: {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}\n")
+        f.write("="*50 + "\n")
+        f.write(transcript)
+    
+    if guild_id in config:
+        logs_id = config[guild_id].get("canal_logs")
+        if logs_id:
+            canal_logs = bot.get_channel(int(logs_id))
+            if canal_logs:
+                file = discord.File(transcript_file, filename=f"transcript_{interaction.channel.id}.txt")
+                embed_log = discord.Embed(
+                    title="📄 TRANSCRIÇÃO DE TICKET",
+                    description=f"Ticket #{interaction.channel.id} fechado",
+                    color=discord.Color.orange()
+                )
+                await canal_logs.send(embed=embed_log, file=file)
+    
+    log_event(f"Ticket fechado via comando: {interaction.channel.id} por {interaction.user.name}")
+    
+    await asyncio.sleep(5)
+    await interaction.channel.delete()
+
+@bot.tree.command(name="adicionar", description="Adicionar usuário ao ticket atual")
+@commands.has_permissions(manage_channels=True)
+async def adicionar_usuario_cmd(interaction: discord.Interaction, usuario: discord.Member):
+    config = load_config()
+    guild_id = str(interaction.guild.id)
+    
+    if guild_id not in config:
+        await interaction.response.send_message("Este não é um canal de ticket.", ephemeral=True)
+        return
+    
+    categoria_id = config[guild_id].get("categoria_tickets")
+    if not categoria_id or interaction.channel.category_id != int(categoria_id):
+        await interaction.response.send_message("Este comando só funciona em canais de ticket.", ephemeral=True)
+        return
+    
+    await interaction.channel.set_permissions(usuario, read_messages=True, send_messages=True)
+    
+    embed = discord.Embed(
+        title="👤 USUÁRIO ADICIONADO",
+        description=f"{usuario.mention} foi adicionado ao ticket por {interaction.user.mention}",
+        color=discord.Color.green()
+    )
+    
+    await interaction.response.send_message(embed=embed)
+    await interaction.channel.send(f"{usuario.mention} foi adicionado ao ticket!")
+
+@bot.tree.command(name="tickets", description="Listar todos os tickets abertos")
+@commands.has_permissions(manage_channels=True)
+async def listar_tickets_cmd(interaction: discord.Interaction):
+    config = load_config()
+    guild_id = str(interaction.guild.id)
+    
+    if guild_id not in config:
+        await interaction.response.send_message("Sistema não configurado.", ephemeral=True)
+        return
+    
+    categoria_id = config[guild_id].get("categoria_tickets")
+    if not categoria_id:
+        await interaction.response.send_message("Categoria de tickets não configurada.", ephemeral=True)
+        return
+    
+    categoria = bot.get_channel(int(categoria_id))
+    if not categoria or not isinstance(categoria, discord.CategoryChannel):
+        await interaction.response.send_message("Categoria não encontrada.", ephemeral=True)
+        return
+    
+    tickets = [c for c in categoria.text_channels if "ticket" in c.name or any(pt in c.name for pt in ["suporte", "parceria", "denuncia"])]
+    
+    if not tickets:
+        embed = discord.Embed(
+            title="🎫 TICKETS ABERTOS",
+            description="Nenhum ticket aberto no momento.",
+            color=discord.Color.green()
+        )
+        await interaction.response.send_message(embed=embed)
+        return
+    
+    embed = discord.Embed(
+        title=f"🎫 TICKETS ABERTOS ({len(tickets)})",
+        color=discord.Color.blue()
+    )
+    
+    for ticket in tickets:
+        user_id = None
+        if ticket.topic:
+            match = re.search(r'ID: (\d+)', ticket.topic)
+            if match:
+                user_id = match.group(1)
+        
+        user_info = "Usuário desconhecido"
+        if user_id:
+            member = interaction.guild.get_member(int(user_id))
+            if member:
+                user_info = f"{member.name}"
+        
+        created_at = ticket.created_at.strftime("%d/%m %H:%M")
+        
+        embed.add_field(
+            name=f"#{ticket.name}",
+            value=f"👤 {user_info}\n📅 {created_at}\n🔗 {ticket.mention}",
+            inline=True
+        )
+    
+    await interaction.response.send_message(embed=embed)
+
+@bot.tree.command(name="configurar", description="Configurar rapidamente o sistema")
+@commands.has_permissions(administrator=True)
+async def configurar_rapido_cmd(interaction: discord.Interaction, 
+                              categoria: discord.CategoryChannel,
+                              canal_logs: discord.TextChannel = None):
+    config = load_config()
+    guild_id = str(interaction.guild.id)
+    
+    if guild_id not in config:
+        config[guild_id] = {}
+    
+    config[guild_id]["categoria_tickets"] = str(categoria.id)
+    
+    if canal_logs:
+        config[guild_id]["canal_logs"] = str(canal_logs.id)
+    
+    save_config(config)
+    
+    embed = discord.Embed(
+        title="✅ CONFIGURAÇÃO COMPLETA",
+        color=discord.Color.green()
+    )
+    
+    embed.add_field(name="📁 Categoria de Tickets", value=categoria.mention, inline=True)
+    if canal_logs:
+        embed.add_field(name="📝 Canal de Logs", value=canal_logs.mention, inline=True)
+    
+    embed.add_field(name="👑 Administradores", value="Use /admin para configurar", inline=False)
+    embed.add_field(name="🖼️ Imagem", value="Use /admin para configurar", inline=False)
+    
+    log_event(f"Configuração rápida por {interaction.user.name}: categoria={categoria.id}")
+    await interaction.response.send_message(embed=embed)
+
+@bot.tree.command(name="ajuda", description="Ajuda do Sistema")
+async def ajuda_cmd(interaction: discord.Interaction):
+    embed = discord.Embed(
+        title="❓ AJUDA DO SISTEMA COMPLETO",
+        description="Todos os comandos e funcionalidades disponíveis",
+        color=discord.Color.blue()
+    )
+    
+    user_commands = """
+    **👤 COMANDOS PARA USUÁRIOS:**
+    • **Tickets:** Clique em **'CRIAR TICKET'** - Criar um ticket de suporte
+    • **Cargos:** Clique nos botões do painel de cargos para adicionar/remover
+    • `/ajuda` - Mostra esta mensagem
+    • `/fechar` - Fecha o ticket atual (apenas no canal do ticket)
+    """
+    
+    admin_commands = """
+    **👑 COMANDOS PARA ADMINISTRADORES:**
+    • `/admin` - Painel completo de administração
+    • `/criar_painel_tickets` - Criar painel de tickets
+    • `/painel_cargos` - Criar painel de cargos para jogos
+    • `/tickets` - Listar todos tickets abertos
+    • `/adicionar @usuario` - Adicionar usuário ao ticket
+    • `/configurar categoria logs` - Configuração rápida
+    • `/limpar quantidade` - Limpar mensagens do chat
+    """
+    
+    features = """
+    **✨ FUNCIONALIDADES:**
+    • **Sistema de Tickets:**
+      - Criação automática de tickets privados
+      - Sistema de respostas automáticas
+      - Transcrição automática ao fechar
+      - Sistema de logs completo
+    
+    • **Sistema de Cargos:**
+      - Painel interativo para jogos
+      - Botões dinâmicos por servidor
+      - Adicionar/remover cargos com um clique
+      - Suporte a múltiplos jogos
+      - **COM SUPORTE A EMOJIS PERSONALIZADOS!** Use IDs de emojis
+    
+    • **Outros:**
+      - Interface intuitiva
+      - Controle total de permissões
+      - Ferramentas de moderação
+      - Suporte 24/7
+    """
+    
+    embed.add_field(name="Para Usuários", value=user_commands, inline=False)
+    embed.add_field(name="Para Administradores", value=admin_commands, inline=False)
+    embed.add_field(name="Recursos", value=features, inline=False)
+    
+    embed.set_footer(text="🎮 Sistema Completo • Suporte 24/7")
+    
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+@bot.tree.command(name="limpar", description="Limpar mensagens do canal (com mais opções)")
+@commands.has_permissions(manage_messages=True)
+async def limpar_avancado_cmd(interaction: discord.Interaction,
+                            quantidade: int = 10,
+                            usuario: discord.Member = None,
+                            motivo: str = ""):
+    
+    if quantidade < 1 or quantidade > 100:
+        await interaction.response.send_message("❌ Quantidade deve ser entre 1 e 100.", ephemeral=True)
+        return
+    
+    await interaction.response.defer(ephemeral=True)
+    
+    def check_msg(message):
+        if usuario:
+            return message.author.id == usuario.id
+        return True
+    
+    try:
+        deleted = await interaction.channel.purge(
+            limit=quantidade,
+            check=check_msg,
+            bulk=True
+        )
+        
+        embed = discord.Embed(
+            title="🧹 CHAT LIMPO",
+            color=discord.Color.green(),
+            timestamp=datetime.now()
+        )
+        
+        if usuario:
+            embed.description = f"**{len(deleted)}** mensagens de {usuario.mention} foram removidas"
+            embed.add_field(name="👤 Filtro", value=f"Apenas mensagens de {usuario.name}", inline=True)
+        else:
+            embed.description = f"**{len(deleted)}** mensagens foram removidas"
+        
+        embed.add_field(name="🧹 Por", value=interaction.user.mention, inline=True)
+        embed.add_field(name="📊 Quantidade", value=str(len(deleted)), inline=True)
+        
+        if motivo:
+            embed.add_field(name="📝 Motivo", value=motivo, inline=False)
+        
+        msg = await interaction.channel.send(embed=embed)
+        
+        config = load_config()
+        guild_id = str(interaction.guild.id)
+        
+        if guild_id in config:
+            logs_id = config[guild_id].get("canal_logs")
+            if logs_id:
+                canal_logs = bot.get_channel(int(logs_id))
+                if canal_logs:
+                    embed_log = discord.Embed(
+                        title="📋 LOG DE LIMPEZA",
+                        color=discord.Color.orange(),
+                        timestamp=datetime.now()
+                    )
+                    embed_log.add_field(name="🧹 Ação", value="Limpeza de chat", inline=True)
+                    embed_log.add_field(name="👤 Por", value=interaction.user.name, inline=True)
+                    embed_log.add_field(name="📁 Canal", value=interaction.channel.mention, inline=True)
+                    embed_log.add_field(name="📊 Mensagens", value=str(len(deleted)), inline=True)
+                    embed_log.add_field(name="🎯 Filtro", value=f"{usuario.name if usuario else 'Todas'}", inline=True)
+                    
+                    if motivo:
+                        embed_log.add_field(name="📝 Motivo", value=motivo, inline=False)
+                    
+                    await canal_logs.send(embed=embed_log)
+        
+        await interaction.followup.send(
+            f"✅ {len(deleted)} mensagens foram removidas de {interaction.channel.mention}",
+            ephemeral=True
+        )
+        
+        log_event(f"Chat limpo por {interaction.user.name}: {len(deleted)} mensagens em {interaction.channel.name}")
+        
+        await asyncio.sleep(10)
+        await msg.delete()
+        
+    except discord.errors.Forbidden:
+        await interaction.followup.send("❌ Não tenho permissão para gerenciar mensagens neste canal.", ephemeral=True)
+    except Exception as e:
+        await interaction.followup.send(f"❌ Erro ao limpar mensagens: {e}", ephemeral=True)
+        log_event(f"ERRO ao limpar chat: {e}")
+
+@bot.event
+async def on_ready():
+    print(f"✅ {bot.user} está online!")
+    print(f"📅 {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}")
+    print(f"🌐 Servidores: {len(bot.guilds)}")
+    
+    try:
+        synced = await bot.tree.sync()
+        print(f"🔄 {len(synced)} comandos sincronizados")
+    except Exception as e:
+        print(f"❌ Erro ao sincronizar: {e}")
+    
+    await bot.change_presence(
+        activity=discord.Activity(
+            type=discord.ActivityType.watching,
+            name="🎫 Tickets • 🎮 Cargos"
+        ),
+        status=discord.Status.online
+    )
+    
+    bot.add_view(TicketButton())
+    print("👁️ Views registradas")
+    print("🚀 Sistema Completo pronto!")
+
+@bot.event
+async def on_message(message):
+    if message.author == bot.user:
+        return
+    
+    config = load_config()
+    guild_id = str(message.guild.id) if message.guild else None
+    
+    if guild_id and guild_id in config:
+        categoria_id = config[guild_id].get("categoria_tickets")
+        if categoria_id and message.channel.category_id == int(categoria_id):
+            content_lower = message.content.lower().strip()
+            
+            resposta = None
+            for keyword, responses in RESPOSTAS_AUTOMATICAS.items():
+                if keyword in content_lower:
+                    resposta = random.choice(responses)
+                    break
+            
+            if not resposta and len([m async for m in message.channel.history(limit=5)]) <= 2:
+                resposta = "Olá! Agradecemos por criar um ticket. Nossa equipe de suporte foi notificada e irá atendê-lo em breve. Enquanto isso, por favor, descreva detalhadamente o seu problema."
+            
+            if resposta:
+                await message.channel.send(resposta)
+    
+    elif isinstance(message.channel, discord.TextChannel):
+        content_lower = message.content.lower().strip()
+        
+        if bot.user.mentioned_in(message) and not message.mention_everyone:
+            if any(word in content_lower for word in ['ajuda', 'help', 'suporte', 'problema']):
+                resposta = random.choice(RESPOSTAS_AUTOMATICAS.get("ajuda", ["Como posso ajudar?"]))
+                await message.channel.send(f"{message.author.mention} {resposta}\n\nUse `/ajuda` para ver todos os comandos!")
+                return
+        
+        for keyword, responses in RESPOSTAS_AUTOMATICAS.items():
+            if keyword in content_lower and len(content_lower.split()) < 10:
+                resposta = random.choice(responses)
+                if keyword in ['oi', 'ola', 'olá', 'bom dia', 'boa tarde', 'boa noite']:
+                    await message.channel.send(f"{message.author.mention} {resposta}")
+                break
+    
+    await bot.process_commands(message)
+
+if __name__ == "__main__":
+    if not os.path.exists(CONFIG_FILE):
+        save_config({})
+    
+    if not os.path.exists(CARGOS_FILE):
+        save_cargos({})
+    
+    if not os.path.exists(LOG_FILE):
+        with open(LOG_FILE, 'w', encoding='utf-8') as f:
+            f.write(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Sistema iniciado\n")
+    
+    try:
+        bot.run(TOKEN)
+    except discord.errors.LoginFailure:
+        print("❌ ERRO: TOKEN INVÁLIDO!")
+    except Exception as e:
+        print(f"❌ ERRO: {e}")
